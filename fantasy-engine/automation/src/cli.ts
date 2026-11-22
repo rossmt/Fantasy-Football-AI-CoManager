@@ -184,7 +184,14 @@ program
   .requiredOption('--team <id>', 'Team ID')
   .action(async (options) => {
     try {
-      const { getMyRoster } = await import('@fantasy-ai/shared');
+      const { getMyRoster, espnApi } = await import('@fantasy-ai/shared');
+      if (!process.env.ESPN_S2 || !process.env.ESPN_SWID) {
+        throw new Error('ESPN_S2 and ESPN_SWID environment variables are required');
+      }
+      espnApi.setCookies({
+        espn_s2: process.env.ESPN_S2,
+        swid: process.env.ESPN_SWID
+      });
       const roster = await getMyRoster({
         leagueId: options.league,
         teamId: options.team
