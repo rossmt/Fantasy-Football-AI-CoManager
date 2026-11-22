@@ -25,8 +25,39 @@ export class ESPNApiService {
   private cookies: ESPNCookies | null = null;
   private year: number = getCurrentNFLSeasonYear();
 
+  // Current scoring period as reported by ESPN, cached per league
+  private espnWeekCache = new Map<string, { week: number; fetchedAt: number }>();
+  private activeWeek: number | null = null;
+
+  // Ask ESPN which scoring period the league is in. The date-based estimate
+  // below drifts by a week whenever the season opener isn't on Sept 4.
+  private async resolveCurrentWeek(leagueId: string): Promise<number> {
+    const cached = this.espnWeekCache.get(leagueId);
+    if (cached && Date.now() - cached.fetchedAt < 60 * 60 * 1000) {
+      this.activeWeek = cached.week;
+      return cached.week;
+    }
+    try {
+      const response = await this.axios.get(
+        `/seasons/${this.year}/segments/0/leagues/${leagueId}`,
+        { params: { view: 'mStatus' } }
+      );
+      const week = response.data?.scoringPeriodId;
+      if (typeof week === 'number' && week > 0) {
+        this.espnWeekCache.set(leagueId, { week, fetchedAt: Date.now() });
+        this.activeWeek = week;
+        return week;
+      }
+    } catch {
+      // Fall through to the date-based estimate
+    }
+    this.activeWeek = null;
+    return this.getCurrentWeek();
+  }
+
   // Get current NFL week for the active season
   private getCurrentWeek(): number {
+    if (this.activeWeek !== null) return this.activeWeek;
     const now = new Date();
     const seasonStart = new Date(`${this.year}-09-04`); // NFL season typically starts first Thursday of September
     const timeDiff = now.getTime() - seasonStart.getTime();
@@ -106,7 +137,7 @@ export class ESPNApiService {
 
   async getTeamRoster(leagueId: string, teamId: string): Promise<TeamRoster> {
     try {
-      const currentWeek = this.getCurrentWeek();
+      const currentWeek = await this.resolveCurrentWeek(leagueId);
       
       // Try to get both current week and projected stats
       const response = await this.axios.get(
@@ -441,7 +472,7 @@ export class ESPNApiService {
   }
 
   async getPlayers(leagueId: string): Promise<Player[]> {
-    const currentWeek = this.getCurrentWeek();
+    const currentWeek = await this.resolveCurrentWeek(leagueId);
     const response = await this.axios.get(
       `/seasons/${this.year}/segments/0/leagues/${leagueId}`,
       { 
@@ -458,7 +489,7 @@ export class ESPNApiService {
 
   async getAvailablePlayers(leagueId: string): Promise<Player[]> {
     try {
-      const currentWeek = this.getCurrentWeek();
+      const currentWeek = await this.resolveCurrentWeek(leagueId);
       const response = await this.axios.get(
         `/seasons/${this.year}/segments/0/leagues/${leagueId}`,
         { 
@@ -481,6 +512,7 @@ export class ESPNApiService {
       const players = response.data.players || [];
       return players
         .map((p: any) => this.processPlayerData(p))
+        .filter((p: Player) => p.team !== 'FA') // Unsigned players can't score
         .filter((p: Player) => (p.percentOwned || 0) < 50); // Focus on widely available players
     } catch (error: any) {
       if (error.response?.status === 400) {
@@ -501,6 +533,7 @@ export class ESPNApiService {
           const players = response.data.players || [];
           return players
             .map((p: any) => this.processPlayerData(p))
+            .filter((p: Player) => p.team !== 'FA') // Unsigned players can't score
             .filter((p: Player) => (p.percentOwned || 0) < 95) // Only exclude universally owned players
             .slice(0, 200); // Limit to reasonable number of players
         } catch (fallbackError: any) {
@@ -555,18 +588,12 @@ export class ESPNApiService {
       stat.scoringPeriodId === currentWeek
     );
     
+    // No fallback to other projection stats: whatever ESPN returns there
+    // (other weeks, partial-season totals) isn't this week's projection and
+    // produced nonsense like 100-point waiver adds. No weekly projection
+    // means ESPN doesn't expect the player to play this week.
     if (weeklyProjectionStat) {
       weeklyProjection = weeklyProjectionStat.appliedTotal || 0;
-    } else {
-      // Fallback to any projection stat
-      const anyProjectionStat = stats.find((stat: any) => stat.statSourceId === 1);
-      if (anyProjectionStat) {
-        weeklyProjection = anyProjectionStat.appliedTotal || 0;
-        // If this looks like a season total (>100), estimate weekly
-        if (weeklyProjection > 100) {
-          weeklyProjection = weeklyProjection / 17;
-        }
-      }
     }
     
     // Find actual points
