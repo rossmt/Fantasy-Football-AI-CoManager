@@ -71,6 +71,11 @@ jobs:
 
       - name: Install Dependencies
         working-directory: fantasy-engine/automation
+        env:
+          # NODE_ENV=production (set workflow-wide) makes npm ci skip
+          # devDependencies, including TypeScript, so the build fails with
+          # "tsc: not found" (exit 127). Include them for the build only.
+          npm_config_include: dev
         run: |
           npm ci
           npm run build
@@ -172,6 +177,11 @@ jobs:
 
       - name: Install Dependencies
         working-directory: fantasy-engine/automation
+        env:
+          # NODE_ENV=production (set workflow-wide) makes npm ci skip
+          # devDependencies, including TypeScript, so the build fails with
+          # "tsc: not found" (exit 127). Include them for the build only.
+          npm_config_include: dev
         run: |
           npm ci
           npm run build
