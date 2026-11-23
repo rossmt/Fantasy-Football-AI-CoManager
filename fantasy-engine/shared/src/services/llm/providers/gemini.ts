@@ -2,6 +2,10 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/ge
 import { BaseLLMProvider } from './base.js';
 import { LLMMessage, LLMTool, LLMResponse, LLMConfig } from '../types.js';
 
+// Tried in order when the configured model is overloaded, out of quota or
+// retired. Override with GEMINI_FALLBACK_MODELS.
+const DEFAULT_GEMINI_FALLBACK_MODELS = 'gemini-3.6-flash,gemini-3-flash-preview,gemini-3.5-flash-lite';
+
 export class GeminiProvider extends BaseLLMProvider {
   private client: GoogleGenerativeAI;
   
@@ -32,12 +36,68 @@ export class GeminiProvider extends BaseLLMProvider {
       tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
     }
   ): Promise<LLMResponse> {
-    return this.withRetry(async () => {
+    const candidates = this.candidateModels();
+    let lastError: any;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const modelName = candidates[i];
+      try {
+        // Retry the configured model a couple of times for short blips, then
+        // move on quickly: an overloaded model tends to stay overloaded.
+        const response = await this.withRetry(
+          () => this.chatWithModel(modelName, messages, options),
+          i === 0 ? 2 : 1
+        );
+        if (modelName !== this.config.model) {
+          console.warn(`⚠️ Switched Gemini model from ${this.config.model} to ${modelName} for the rest of this run`);
+          this.config.model = modelName;
+        }
+        return response;
+      } catch (error: any) {
+        lastError = error;
+        const next = candidates[i + 1];
+        if (!next || !GeminiProvider.isModelUnavailable(error)) throw error;
+        console.warn(`⚠️ Gemini model ${modelName} unavailable (${error.status}), falling back to ${next}...`);
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Configured model first, then GEMINI_FALLBACK_MODELS (comma-separated),
+   * without duplicates. Set GEMINI_FALLBACK_MODELS to an empty string to
+   * disable fallback.
+   */
+  private candidateModels(): string[] {
+    const raw = process.env.GEMINI_FALLBACK_MODELS ?? DEFAULT_GEMINI_FALLBACK_MODELS;
+    const fallbacks = raw.split(',').map(m => m.trim()).filter(Boolean);
+    return [...new Set([this.config.model, ...fallbacks])];
+  }
+
+  /**
+   * Errors that mean "this model can't serve us right now" rather than a
+   * problem with the request: overloaded (503), server error (500), out of
+   * quota for this model (429) or model retired/unknown (404).
+   */
+  private static isModelUnavailable(error: any): boolean {
+    return [404, 429, 500, 503].includes(error?.status);
+  }
+
+  private async chatWithModel(
+    modelName: string,
+    messages: LLMMessage[],
+    options?: {
+      tools?: LLMTool[];
+      max_tokens?: number;
+      temperature?: number;
+      tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
+    }
+  ): Promise<LLMResponse> {
       const startTime = Date.now();
-      
+
       // Get the model
       const model = this.client.getGenerativeModel({
-        model: this.config.model,
+        model: modelName,
         generationConfig: {
           temperature: options?.temperature || this.config.temperature || 0.7,
           maxOutputTokens: options?.max_tokens || this.config.max_tokens || 4000,
@@ -136,11 +196,10 @@ export class GeminiProvider extends BaseLLMProvider {
         finish_reason: this.mapFinishReason(response.candidates?.[0]?.finishReason),
         metadata: {
           provider: this.name,
-          model: this.config.model,
+          model: modelName,
           response_time_ms: responseTime
         }
       };
-    });
   }
   
   private convertMessagesToGemini(messages: LLMMessage[]): any[] {

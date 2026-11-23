@@ -36,6 +36,11 @@ export interface LLMResponse {
     total_tokens?: number;
   };
   finish_reason?: 'stop' | 'tool_calls' | 'length' | 'content_filter';
+  metadata?: {
+    provider: string;
+    model: string;
+    response_time_ms: number;
+  };
 }
 
 export interface LLMConfig {

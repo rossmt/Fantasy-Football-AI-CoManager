@@ -124,6 +124,7 @@ POST /api/test/test-cookies | test-public-league | test-endpoint
 Providers live in `shared/src/services/llm/providers/` (`base`, `gemini`, `claude`, `openai`, `perplexity`). Add new providers there and extend `BaseLLMProvider`.
 
 - Default is **Gemini 3.x**; override the model with the `GEMINI_MODEL` env var rather than editing code.
+- `GeminiProvider.chat()` falls back through `GEMINI_FALLBACK_MODELS` (comma-separated; built-in default in `gemini.ts`) when a model returns 404/429/500/503, and sticks with the first one that works for the rest of the run. An empty value disables fallback. `FALLBACK_LLM_PROVIDER` is still not read anywhere — there is no cross-provider fallback.
 - Gemini 3.x models think by default and thinking tokens count against `maxOutputTokens`, so `thinkingConfig.thinkingLevel` is pinned to `'low'` and `validateConfig()` uses a 500-token budget. Do not lower it — small budgets return empty content with `finishReason: MAX_TOKENS`.
 - Model pricing tables are hardcoded in `getPricing()` (per 1M tokens) and `enhancedCostMonitor.ts` (per 1K tokens). Both need updating together when rates change.
 
